@@ -6,6 +6,8 @@ Usage:
 
 Reads run data (result.md, analysis.md, metrics, session_state.json, git diff)
 and outputs a structured markdown report to stdout for the learning agent.
+
+Note: Must be run from the project git root (git commands use no cwd override).
 """
 
 import argparse
@@ -26,6 +28,19 @@ def load_json(path):
     return json.loads(p.read_text()) if p.exists() else None
 
 
+def load_raw_from_monitor(path):
+    p = Path(path)
+    if not p.exists():
+        return None
+    text = p.read_text()
+    marker = "<!-- RAW_METRICS:"
+    if marker not in text:
+        return None
+    start = text.index(marker) + len(marker)
+    end = text.index("-->", start)
+    return json.loads(text[start:end])
+
+
 def collect_metrics_trajectory(run_dir):
     """Collect quality scores across all derived_metrics files."""
     files = sorted(glob.glob(str(run_dir / "derived_metrics_*.json")))
@@ -42,11 +57,11 @@ def collect_metrics_trajectory(run_dir):
 
 
 def get_reward_trend(run_dir):
-    """Determine reward trend from raw metrics."""
-    files = sorted(glob.glob(str(run_dir / "raw_metrics_*.json")))
+    """Determine reward trend from raw metrics embedded in monitor_NNN.md files."""
+    files = sorted(glob.glob(str(run_dir / "monitor_*.md")))
     rewards = []
     for f in files:
-        data = load_json(f)
+        data = load_raw_from_monitor(f)
         if not data:
             continue
         reward_keys = [k for k in data if "Episode_Reward" in k and isinstance(data[k], (int, float))]
