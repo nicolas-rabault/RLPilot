@@ -71,6 +71,7 @@ def main():
     parser.add_argument("run_path", help="wandb run path: entity/project/runs/run_id")
     parser.add_argument("--previous", help="Path to previous monitor output for trend comparison")
     parser.add_argument("--categories", default="", help="Comma-separated metric category prefixes")
+    parser.add_argument("--raw-output", help="Write raw metrics JSON to this file (in addition to embedding in markdown)")
     args = parser.parse_args()
 
     api = wandb.Api()
@@ -102,6 +103,8 @@ def main():
     print(summary)
 
     raw = {k: float(v) for k, v in latest.items() if isinstance(v, (int, float)) and math.isfinite(float(v))}
+    if args.raw_output:
+        Path(args.raw_output).write_text(json.dumps(raw, indent=2) + "\n")
     print(f"\n<!-- RAW_METRICS:{json.dumps(raw)}-->")
 
     sys.exit(2 if run.state in ("killed", "crashed") else 0)
