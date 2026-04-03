@@ -439,6 +439,8 @@ STEP 0: Read project context.
 - Read logs/sessions/<BRANCH_SANITIZED>/session_state.json. If missing or corrupted, notify via notify.sh --branch "<BRANCH>" "Monitor error — session_state.json missing" and exit.
 - Extract: phase, goal, branch, host, current_run, wandb_run_path, monitor_count, consecutive_bad, iterations.
 - Read .claude/rl-training/hosts/<host>/host.md for host details.
+- Read config.md → Monitoring.Task monitoring field. If present, set TASK_DIR = .claude/rl-training/tasks/<task-name>/
+- If TASK_DIR exists, read TASK_DIR/monitor_config.md → extract: quality thresholds, decision rules, human feedback tags.
 
 STEP 1: Act based on phase.
 
@@ -460,10 +462,23 @@ Delete this cron: CronDelete with ID <CRON_ID>. Exit immediately.
    Check exit code: if exit code is 2, the run has crashed/been killed externally — treat as BAD immediately (skip to KILL in step 6).
    If this fails for other reasons, notify via notify.sh --branch "<BRANCH>" "Monitor error — <error>" and exit.
 
+2b. Compute quality metrics (if TASK_DIR exists):
+    Extract raw metrics JSON from the monitor output file (the <!-- RAW_METRICS:...--> comment).
+    Save raw metrics to a temp file: run_NNN/raw_metrics_MMM.json
+    Previous derived: run_NNN/derived_metrics_{M-1 padded}.json (if M > 1)
+    Run: uv run TASK_DIR/monitor_metrics.py run_NNN/raw_metrics_MMM.json [--previous <prev_derived>] --config TASK_DIR/monitor_config.md
+    Capture stdout → save to run_NNN/derived_metrics_{M padded}.json
+    Capture stderr → append to run_NNN/monitor_{M padded}.md (quality metrics markdown)
+    If this fails, log warning but continue with standard metrics only.
+
 3. Evaluate policy (if config says Video: true or Evaluation section exists):
    uv run .claude/rl-training/scripts/evaluate_policy.py <wandb_run_path> --output-dir run_NNN/ --config .claude/rl-training/config.md
    Capture the "Video: <path>" line from stdout — this is the video file path.
    If eval fails, continue without video (set VIDEO_PATH to empty).
+
+3b. Compute detailed quality metrics (if TASK_DIR exists and eval ran):
+    evaluate_policy.py should call TASK_DIR/eval_metrics.py's analyze_trajectory() for each scenario.
+    The task-specific quality breakdown is included in eval_metrics.md and eval_metrics.json.
 
 4. Send notification (if enabled and monitor_update in When list):
    Compose message with actual newlines using printf:
@@ -472,6 +487,11 @@ Delete this cron: CronDelete with ID <CRON_ID>. Exit immediately.
      bash .claude/rl-training/scripts/notify.sh "$MSG" --branch "<BRANCH>" --file "$VIDEO_PATH"
    Otherwise:
      bash .claude/rl-training/scripts/notify.sh "$MSG" --branch "<BRANCH>"
+   If derived metrics exist (run_NNN/derived_metrics_{M padded}.json):
+     Read quality_score and sub-scores.
+     Append to MSG: printf '\nQuality: %.2f' "$QUALITY_SCORE"
+     If any sub-score is below quality_score_bad_threshold from monitor_config.md:
+       Append warning: printf ' (%s: %.2f ⚠)' "$SUB_METRIC" "$SUB_SCORE"
 
 5. DECIDE by comparing current key metrics against the previous monitor file:
    Compare each key metric (from config.md → Key metrics) to its previous value.
@@ -480,6 +500,15 @@ Delete this cron: CronDelete with ID <CRON_ID>. Exit immediately.
    - **FINISH**: main reward metric plateaued (< 2% change over last 3 monitors) AND eval metrics are acceptable (low error, few falls)
    - **BAD**: main reward metric degraded > 10% from its peak, OR key tracking metrics worsening for 2+ consecutive monitors, OR training step hasn't advanced (stalled)
    When in doubt between KEEP and BAD, choose KEEP — false kills waste more time than extra monitoring.
+   Additional rules (if TASK_DIR and monitor_config.md exist):
+   Read quality decision rules from monitor_config.md.
+   - If reward_vs_quality_divergence is true:
+     Check if reward is improving (> 5% gain) but quality_score is declining (> 5% drop)
+     for quality_declining_monitors consecutive monitors → BAD
+   - If quality_score < quality_score_bad_threshold → BAD
+   - For FINISH: also require quality_score >= quality_finish_minimum
+   - If quality_score dropped below quality_score_bad_threshold, trigger eval on next tick
+     (set a flag in session_state.json: "eval_requested": true)
 
 6. ACT:
 
@@ -491,10 +520,16 @@ Delete this cron: CronDelete with ID <CRON_ID>. Exit immediately.
 
    If BAD (consecutive_bad >= kill_threshold - 1) → KILL:
    - Kill training: bash .claude/rl-training/hosts/<host>/kill.sh <BRANCH_SANITIZED>
-   - Write run_NNN/result.md with: goal, kill step, metrics at death, eval results, trend, assessment.
+   - Write run_NNN/result.md with: goal, kill step, metrics at death, eval results, trend, assessment,
+     quality metrics trend across monitors (read derived_metrics_*.json files),
+     which quality sub-scores triggered the kill (if applicable).
+   - Append Human Assessment section to result.md:
+     ## Human Assessment
+     Tags: []
+     Notes: No feedback yet.
    - Update session_state.json:
      - phase: "ITERATE"
-     - Add to iterations: {run: N, result: "<one-line>"}
+     - Add to iterations: {run: N, result: "<one-line>", human_feedback: null}
      - Increment current_run
      - mkdir -p logs/sessions/<BRANCH_SANITIZED>/run_{new N padded}/
    - If current_run > max_iterations from config: set phase: "PAUSED" instead of "ITERATE".
