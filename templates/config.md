@@ -24,6 +24,7 @@ Order: [<host1>, <host2>, ...]
 
 ## Monitoring
 - Tool: <wandb, tensorboard, local>
+- Task monitoring: <task-name>
 - Metric categories: [<prefix1/>, <prefix2/>, ...]
 - Key metrics: [<metric1>, <metric2>, ...]
 - Kill threshold: 2
