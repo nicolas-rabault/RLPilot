@@ -496,6 +496,33 @@ Before committing, apply `superpowers:verification-before-completion` principles
 17. Push: `cd ../<project>-wt-<branch-sanitized> && git push origin HEAD`
 18. Write `logs/sessions/<branch-sanitized>/run_{current_run}/context.md`
 
+### Step 4b: UPDATE LEARNINGS (background, non-blocking)
+
+19. Run the data extraction script:
+    `uv run .claude/rl-training/scripts/learnings.py <session_dir> --run <previous_run>`
+    Capture the output.
+
+20. Spawn a background Agent with this prompt:
+    ```
+    You are the training learning agent. Your job is to update docs/training-learnings.md with actionable insights from this training run.
+
+    Here is the structured report from this run:
+    <paste learnings.py output>
+
+    Read docs/training-learnings.md. Based on the report:
+    - Add new insights that are actionable and backed by the evidence in the report
+    - Update existing entries if new evidence refines or contradicts them
+    - Remove entries that are proven wrong by this run's data
+    - Keep entries concise — one bullet per insight
+    - Use existing categories or add new ones if needed
+    - Task-qualify entries when they only apply to specific task types (e.g., "For locomotion: ...")
+    - Do nothing if there's no new insight worth capturing
+
+    If you make changes, commit with a message like: "learnings: <what was learned>"
+    ```
+
+    This runs in the background — proceed to RELAUNCH immediately without waiting.
+
 ### Step 5: RELAUNCH
 
 Follow Phase 3 (LAUNCH) from Step 2 onward — spawn Run Agent, create new monitoring cron.
