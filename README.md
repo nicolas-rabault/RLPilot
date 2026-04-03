@@ -18,10 +18,6 @@ Multiple training sessions can run in parallel on different branches and hosts.
 ## Requirements
 
 - [Claude Code](https://docs.anthropic.com/en/docs/claude-code) CLI
-- [Superpowers plugin](https://github.com/anthropics/claude-plugins-official) (auto-installed if missing)
-- WandB account (for metric tracking)
-- SSH access to a GPU server
-- `jq` installed locally
 
 ## Install
 

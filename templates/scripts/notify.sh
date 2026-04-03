@@ -15,7 +15,14 @@
 
 set -euo pipefail
 
-command -v jq >/dev/null 2>&1 || { echo "ERROR: jq is required but not installed" >&2; exit 1; }
+if ! command -v jq >/dev/null 2>&1; then
+    echo "jq not found — installing..." >&2
+    if command -v brew >/dev/null 2>&1; then brew install jq
+    elif command -v apt-get >/dev/null 2>&1; then sudo apt-get install -y jq
+    elif command -v yum >/dev/null 2>&1; then sudo yum install -y jq
+    elif command -v pacman >/dev/null 2>&1; then sudo pacman -S --noconfirm jq
+    else echo "ERROR: Cannot auto-install jq — install it manually" >&2; exit 1; fi
+fi
 [ $# -lt 1 ] && { echo "Usage: notify.sh \"<message>\" [--branch <name>] [--file <path>]" >&2; exit 1; }
 
 MESSAGE="$1"
