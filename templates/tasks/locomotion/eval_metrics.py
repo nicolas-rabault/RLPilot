@@ -5,7 +5,33 @@ Called by evaluate_policy.py after each scenario rollout.
 Not run standalone — imported and called via analyze_trajectory().
 """
 
+import re
+from pathlib import Path
+
 import numpy as np
+
+
+def parse_tier2_config(config_path):
+    """Parse Tier 2 Normalization section from monitor_config.md.
+
+    Returns dict of {metric: {"min": float, "max": float, "type": str, "weight": float}}
+    """
+    if config_path is None:
+        return None
+    text = Path(config_path).read_text() if isinstance(config_path, (str, Path)) else None
+    if text is None:
+        return None
+    config = {}
+    for line in text.splitlines():
+        m = re.match(r"^- (\w+):\s*([\d.]+),\s*([\d.]+),\s*(\w+),\s*([\d.]+)", line)
+        if m:
+            config[m.group(1)] = {
+                "min": float(m.group(2)),
+                "max": float(m.group(3)),
+                "type": m.group(4),
+                "weight": float(m.group(5)),
+            }
+    return config if config else None
 
 
 def compute_joint_jerk(joint_positions, dt):
@@ -136,24 +162,37 @@ def normalize_score(value, good_min, good_max, metric_type="higher_better"):
     return (value - good_min) / (good_max - good_min)
 
 
-def analyze_trajectory(joint_positions, joint_velocities, contact_states, contact_forces, dt):
-    """Main entry point — called by evaluate_policy.py per scenario.
+def analyze_trajectory(joint_positions, joint_velocities, contact_states, contact_forces, dt, config_path=None):
+    """Main entry point - called by evaluate_policy.py per scenario.
 
     Args:
         joint_positions: np.array (timesteps, num_joints)
         joint_velocities: np.array (timesteps, num_joints)
-        contact_states: np.array (timesteps, num_feet) — binary 0/1
-        contact_forces: np.array (timesteps, num_feet) — vertical force magnitude, or None
-        dt: float — simulation timestep
+        contact_states: np.array (timesteps, num_feet) - binary 0/1
+        contact_forces: np.array (timesteps, num_feet) - vertical force magnitude, or None
+        dt: float - simulation timestep
+        config_path: optional path to monitor_config.md for normalization ranges and weights
 
     Returns:
         dict with raw metrics and normalized scores
     """
+    tier2 = parse_tier2_config(config_path)
+
     jerk = compute_joint_jerk(joint_positions, dt)
     periodicity = compute_step_periodicity(contact_states, dt)
     stance_swing = compute_stance_swing_ratio(contact_states)
     phase = compute_phase_offset(contact_states)
     grf = compute_grf_profile_score(contact_forces, contact_states)
+
+    def get_range(metric, default_min, default_max, default_type):
+        if tier2 and metric in tier2:
+            return tier2[metric]["min"], tier2[metric]["max"], tier2[metric]["type"]
+        return default_min, default_max, default_type
+
+    jerk_min, jerk_max, jerk_type = get_range("joint_jerk", 0, 100, "lower_better")
+    period_min, period_max, period_type = get_range("step_periodicity", 0, 1, "higher_better")
+    phase_min, phase_max, phase_type = get_range("phase_offset", 0, 1, "higher_better")
+    grf_min, grf_max, grf_type = get_range("grf_profile_score", 0, 1, "higher_better")
 
     stance_score = None
     if stance_swing is not None:
@@ -161,15 +200,34 @@ def analyze_trajectory(joint_positions, joint_velocities, contact_states, contac
         stance_score = max(0.0, min(1.0, stance_score))
 
     sub_scores = {
-        "joint_jerk_score": normalize_score(jerk, 0, 100, "lower_better"),
-        "periodicity_score": normalize_score(periodicity, 0, 1, "higher_better"),
+        "joint_jerk_score": normalize_score(jerk, jerk_min, jerk_max, jerk_type),
+        "periodicity_score": normalize_score(periodicity, period_min, period_max, period_type),
         "stance_swing_score": stance_score,
-        "phase_offset_score": normalize_score(phase, 0, 1, "higher_better") if phase is not None else None,
-        "grf_score": grf,
+        "phase_offset_score": normalize_score(phase, phase_min, phase_max, phase_type) if phase is not None else None,
+        "grf_score": normalize_score(grf, grf_min, grf_max, grf_type) if grf is not None else None,
     }
 
-    valid = [s for s in sub_scores.values() if s is not None]
-    detailed_quality_score = float(np.mean(valid)) if valid else None
+    score_to_metric = {
+        "joint_jerk_score": "joint_jerk",
+        "periodicity_score": "step_periodicity",
+        "stance_swing_score": "stance_swing_ratio",
+        "phase_offset_score": "phase_offset",
+        "grf_score": "grf_profile_score",
+    }
+
+    if tier2:
+        weighted_sum = 0.0
+        total_weight = 0.0
+        for score_name, val in sub_scores.items():
+            metric_name = score_to_metric.get(score_name)
+            if val is not None and metric_name and metric_name in tier2:
+                w = tier2[metric_name]["weight"]
+                weighted_sum += val * w
+                total_weight += w
+        detailed_quality_score = float(weighted_sum / total_weight) if total_weight > 1e-6 else None
+    else:
+        valid = [s for s in sub_scores.values() if s is not None]
+        detailed_quality_score = float(np.mean(valid)) if valid else None
 
     return {
         "joint_jerk": jerk,
