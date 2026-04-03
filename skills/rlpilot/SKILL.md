@@ -61,242 +61,50 @@ Before starting any phase, check if the superpowers plugin is installed and enab
 
 **Trigger**: `.claude/rl-training/config.md` does not exist, OR user explicitly asks to update training config.
 
-If config exists and user wants to update, show current config sections and ask which to update. Only regenerate affected scripts.
+SETUP is split into 5 sub-phases, each run by a dedicated agent with clean context. Phase prompts live in `${CLAUDE_PLUGIN_ROOT}/skills/rlpilot/setup/`. The orchestrator sequences them using file-based checkpointing.
 
-### Step 1: Codebase Exploration (autonomous)
+### Phase order
 
-No user interaction. Scan the project:
-- Read project structure, dependencies (`pyproject.toml`, `setup.py`, `requirements.txt`), entry points
-- Identify: simulator, RL framework, algorithm, task names
-- Look at existing training scripts, config files, reward definitions
-- Produce a findings summary for the next steps
+~~~
+SETUP-DISCOVER → SETUP-MONITOR → SETUP-HOSTS → SETUP-NOTIFY → SETUP-GENERATE
+~~~
 
-### Step 2: Robot & Objective (interactive)
+### Orchestrator logic
 
-Present findings from Step 1. Ask user to confirm or correct. Then ask:
-- Robot type and key physical traits / constraints
-- Actuated joints and any special mechanics
-- Training objective — what should the robot learn?
-- One question at a time.
+For each phase in order, check if it's already done. If not, dispatch a foreground Agent with the phase prompt and injected context. After the agent returns, verify outputs exist before moving on.
 
-### Step 3: Training Hosts (interactive)
+**Checkpoints (skip phase if signal exists):**
 
-Ask user to add hosts one by one. For each host:
-- Name (identifier, e.g. `lerobot`, `cluster1`, `local`)
-- Type: direct SSH, SLURM cluster, or local
-- Connection details (SSH alias, remote dir, tunnel command)
-- GPU check command and threshold
-- PATH setup if needed
-- Cluster-specific params if applicable (partition, GPU type, allocation command)
-- Dependencies command for this host
+| Phase | Done signal |
+|-------|------------|
+| SETUP-DISCOVER | `config.md` has `## Robot` and `## Task` sections |
+| SETUP-MONITOR | At least one `.claude/rl-training/tasks/*/monitor_config.md` exists |
+| SETUP-HOSTS | `config.md` has `## Hosts` section + matching `hosts/<name>/host.md` files exist |
+| SETUP-NOTIFY | `config.md` has `## Notifications` section |
+| SETUP-GENERATE | `.claude/rl-training/scripts/monitor.py` exists |
 
-Generate per-host directory `.claude/rl-training/hosts/<name>/`:
-- `host.md` — host config
-- `launch.sh` — availability check + worktree setup + training launch
-- `kill.sh` — stop training for a session
+**Context injection per phase:**
 
-Refer to template examples in `${CLAUDE_PLUGIN_ROOT}/templates/hosts/example/` for the expected format and structure of host scripts. Adapt them to the specific host type and configuration.
+| Phase | Read and inject |
+|-------|----------------|
+| SETUP-DISCOVER | (none — agent reads codebase directly) |
+| SETUP-MONITOR | `config.md` (Robot, Task, Source Files sections) |
+| SETUP-HOSTS | `config.md` (all sections so far), `tasks/*/monitor_config.md`, `rl_training_infra.md` |
+| SETUP-NOTIFY | `config.md`, any existing webhook config files (e.g., `.claude-discord.md`) |
+| SETUP-GENERATE | `config.md` (complete), all `hosts/*/host.md`, `tasks/*/monitor_config.md`, `rl_training_infra.md` |
 
-Ask "Add another host?" until done.
+**Dispatch pattern** (repeat for each incomplete phase):
+1. Read the phase prompt from `${CLAUDE_PLUGIN_ROOT}/skills/rlpilot/setup/<phase>.md`
+2. Read the context files listed above
+3. Replace `<CONFIG_CONTEXT>`, `<MONITOR_CONFIG>`, `<HOST_CONFIGS>`, `<INFRA_MEMORY>`, `<WEBHOOK_FILES>` placeholders in the prompt with actual file contents
+4. Spawn a foreground Agent with the assembled prompt
+5. After the agent finishes, check the done signal. If missing, inform the user and offer to retry or skip.
 
-Write `## Hosts` section in config.md with ordered host list.
+**Update path:** If config exists and user wants to update, show current config sections and ask which to update. Map the section to its phase and re-run just that phase (skip its checkpoint check).
 
-### Step 3b: Host Validation (sequential, one agent per host)
+### Metric Design Agent (re-invocable)
 
-After all hosts are collected, validate each host **sequentially** — one at a time, using a **separate Agent per host** (clean context per machine). Fix issues with the user before moving to the next host.
-
-For each host in order:
-
-1. Spawn a dedicated Agent (foreground) with this prompt:
-
-```
-You are validating training host "<HOST_NAME>" for the RL training setup.
-Host config: <paste host.md content>
-
-Run these checks in order. For each check, report PASS or FAIL with details.
-
-1. SSH CONNECTIVITY
-   - Run: ssh -o ConnectTimeout=10 -o BatchMode=yes <ssh-alias> "echo ok"
-   - If fail: report the exact error. Common fixes:
-     * SSH key not added: suggest `ssh-add` or `ssh-copy-id`
-     * Host not in known_hosts: suggest `ssh-keyscan`
-     * Wrong alias: ask user to check ~/.ssh/config
-     * Connection refused: check if host is up, port is correct
-   - If SSH fails, STOP here — remaining checks require SSH access.
-
-2. REMOTE DIRECTORY
-   - Run: ssh <ssh-alias> "test -d <remote-dir> && echo exists || echo missing"
-   - If missing: offer to create it: ssh <ssh-alias> "mkdir -p <remote-dir>"
-
-3. GPU AVAILABILITY
-   - Run: ssh <ssh-alias> "<gpu-check-command>"
-   - Report GPU count, type, memory if available
-   - If no GPU found: warn but don't fail (might be a CPU-only host)
-
-4. DEPENDENCIES
-   - Run: ssh <ssh-alias> "which python3 && python3 --version"
-   - Run: ssh <ssh-alias> "which uv && uv --version" (if uv is used)
-   - If PATH setup is configured, test it: ssh <ssh-alias> "source <path-setup> && which python3"
-   - Report missing dependencies
-
-5. GIT ACCESS
-   - Run: ssh <ssh-alias> "cd <remote-dir> && git status --short" (if repo exists)
-   - Or: ssh <ssh-alias> "cd <remote-dir> && git clone --depth 1 <repo-url> ." (if empty dir)
-   - Report git availability and repo state
-
-Return a structured report:
-HOST: <name>
-STATUS: READY | NEEDS_SETUP | UNREACHABLE
-CHECKS:
-  - SSH: PASS/FAIL — <details>
-  - Directory: PASS/FAIL — <details>
-  - GPU: PASS/FAIL — <details>
-  - Dependencies: PASS/FAIL — <details>
-  - Git: PASS/FAIL — <details>
-ISSUES: <list of things that need fixing, or "none">
-SUGGESTED_FIXES: <actionable commands the user can run to fix issues>
-```
-
-2. If the agent reports READY: confirm to user, move to the next host.
-3. If the agent reports NEEDS_SETUP or UNREACHABLE:
-   - Present the issues and suggested fixes to the user
-   - Walk through each fix interactively (run commands, verify they work)
-   - After fixes, re-run the validation agent for this host to confirm
-   - If the user wants to skip the host instead: remove it from the host list
-4. Only proceed to the next host after the current one is fully validated or skipped.
-
-### Step 4a: Monitoring & Evaluation — Generic Setup (interactive)
-
-- What monitoring tool? (WandB, TensorBoard, local logs)
-- If WandB: project path → store in `rl_training_infra.md`
-- Key metric categories and prefixes to track
-- Evaluation: what scenarios to test, what metrics, record video?
-- May iterate with user to refine eval strategy
-
-### Step 4b: Metric Design Agent (interactive)
-
-Spawn the Metric Design Agent to brainstorm and generate task-specific monitoring. This agent:
-
-1. Reads context: robot type (from Step 2), actuators, task objective, simulator, existing reward terms, observation space. Scans the training code for existing WandB log calls to identify what's already logged.
-
-2. Proposes metric categories based on task type:
-   - Locomotion → gait quality (symmetry, periodicity, smoothness, contact patterns)
-   - Manipulation → grasp stability, approach trajectory, contact forces
-   - Balance → CoM tracking, recovery time, base stability
-   - Custom → asks user what "good" and "bad" look like
-
-3. Brainstorms with the user (one question at a time):
-   - What does a bad behavior look like for this specific robot?
-   - Which existing reward terms should be promoted to monitored quality metrics?
-   - What's the minimum quality you'd accept for a KEEP decision?
-
-4. Maps metrics to tiers:
-   - Tier 1 (derived from existing WandB logs): no training code changes needed
-   - Tier 2 (eval-time from simulation state): needs eval_metrics.py
-   - Tier 3 (needs new training-time logging): flags for CODE phase if user approves
-
-5. Generates the task monitoring directory using templates from `${CLAUDE_PLUGIN_ROOT}/templates/tasks/<task-type>/` as starting points:
-   - `.claude/rl-training/tasks/<task-name>/monitor_config.md` — metrics, thresholds, weights, decision rules, human feedback tags
-   - `.claude/rl-training/tasks/<task-name>/monitor_metrics.py` — Tier 1 derived metric computation
-   - `.claude/rl-training/tasks/<task-name>/eval_metrics.py` — Tier 2 detailed quality analysis
-
-6. Updates `config.md` with `Task monitoring: <task-name>`
-
-The Metric Design Agent can also be re-invoked on demand: user says "improve monitoring for this task," or the ITERATE phase detects 3+ iterations with human feedback tags that don't correspond to any monitored metric.
-
-### Step 4c: Monitoring Validation (sequential, one agent per host)
-
-After monitoring config is gathered, validate monitoring access on each validated host **sequentially** — one agent per host, fix issues before moving on.
-
-For each validated host in order:
-
-1. Spawn a dedicated Agent (foreground) with this prompt:
-
-```
-You are validating monitoring configuration on host "<HOST_NAME>" for RL training.
-Host config: <paste host.md content>
-Monitoring tool: <tool name, e.g. "wandb">
-Monitoring config: <relevant config, e.g. wandb project path>
-
-Run these checks:
-
-1. MONITORING TOOL INSTALLED
-   - For WandB: ssh <ssh-alias> "<path-setup-if-any> && python3 -c 'import wandb; print(wandb.__version__)'"
-   - For TensorBoard: ssh <ssh-alias> "<path-setup-if-any> && python3 -c 'import tensorboard; print(tensorboard.__version__)'"
-   - If not installed: report and suggest install command
-
-2. MONITORING TOOL AUTHENTICATED
-   - For WandB: ssh <ssh-alias> "<path-setup-if-any> && python3 -c 'import wandb; api = wandb.Api(); print(api.viewer.entity)'"
-   - If not authenticated: report FAIL. Suggest: ssh <ssh-alias> "wandb login"
-   - If authenticated: report the entity/username
-
-3. PROJECT ACCESS (if applicable)
-   - For WandB: ssh <ssh-alias> "<path-setup-if-any> && python3 -c 'import wandb; api = wandb.Api(); p = api.project(\"<project-name>\", entity=\"<entity>\"); print(p.name)'"
-   - If project doesn't exist: warn (it may be created on first run, which is fine)
-   - If access denied: report FAIL with details
-
-Return a structured report:
-HOST: <name>
-MONITORING_STATUS: READY | NEEDS_SETUP
-CHECKS:
-  - Tool installed: PASS/FAIL — <details>
-  - Authenticated: PASS/FAIL — <entity or error>
-  - Project access: PASS/FAIL/SKIP — <details>
-ISSUES: <list or "none">
-SUGGESTED_FIXES: <actionable commands>
-```
-
-2. If READY: confirm to user, move to the next host.
-3. If NEEDS_SETUP:
-   - Show issues and suggested fixes (e.g., "Run `ssh lerobot 'wandb login'` to authenticate")
-   - Walk through each fix interactively with the user
-   - Re-run the validation agent to confirm
-   - If user wants to skip: remove host from the host list
-4. Only proceed to the next host after the current one is validated or skipped.
-
-### Step 5: Notifications (interactive)
-
-- Does the user want notifications about training progress?
-- If yes: ask how — Discord webhook, Slack webhook, email, custom?
-  - Look at existing project config files (e.g., `.claude-discord.md`) for webhook URLs
-  - Store any credentials/webhooks in `rl_training_infra.md`
-- Which events trigger notifications? (training_started, monitor_update, eval_complete, training_killed, iteration_started, blocker)
-- **Always generate `.claude/rl-training/scripts/notify.sh`** — cron agents cannot invoke Claude Code skills, so all notification delivery must go through a bash script.
-
-### Step 6: Generate (autonomous)
-
-- Write `.claude/rl-training/config.md` from gathered info
-- Write `rl_training_infra.md` to project memory (WandB details only)
-- Generate shared scripts in `.claude/rl-training/scripts/`, using templates from `${CLAUDE_PLUGIN_ROOT}/templates/scripts/` as a starting point and adapting to the project:
-  - `init_session.sh` — session state management (branch-based)
-  - `get_latest_run.py` — find active run (WandB or other)
-  - `monitor.py` — fetch metrics and format markdown report
-  - `evaluate_policy.py` — headless eval with video and metrics (framework-specific, generated from scratch based on the project's RL framework)
-  - `notify.sh` — notification delivery with `--branch` support
-  - `learnings.py` — gather structured run data for the learning agent
-- Task monitoring directory `.claude/rl-training/tasks/<task-name>/` is generated by the Metric Design Agent in Step 4b (not in this step)
-- Create initial `docs/training-learnings.md` if it doesn't exist:
-  ```markdown
-  # Training Learnings
-
-  Actionable tips and insights accumulated from training experiments.
-  Each entry is backed by observed evidence from training runs.
-
-  ## Reward Design
-
-  ## Observation Space
-
-  ## Training Hyperparameters
-
-  ## Physical Limits & Robot Capabilities
-
-  ## Common Failure Modes
-
-  ## What Doesn't Work
-  ```
-- Per-host scripts already generated in Step 3
-- Make all scripts executable
-- Present summary of generated files to user for review
+The Metric Design Agent (part of SETUP-MONITOR) can also be re-invoked on demand: user says "improve monitoring for this task," or the ITERATE phase detects 3+ iterations with human feedback tags that don't correspond to any monitored metric. To re-invoke, run just the SETUP-MONITOR phase with its checkpoint skipped.
 
 ## Phase 1: CLARIFY
 
