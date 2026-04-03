@@ -373,6 +373,13 @@ Invoke `superpowers:systematic-debugging` skill. Follow its phases:
 3. Read source files listed in `config.md` → Source Files section. Work in the local worktree: `../<project>-wt-<branch-sanitized>`
 4. Read robot specificities from `config.md` → Robot section
 5. Gather evidence: compare metrics across monitors, identify exactly when and where performance degraded
+5b. Read quality metrics: scan run_{previous_run}/derived_metrics_*.json files.
+    Identify which quality sub-scores degraded and when.
+    Read run_{previous_run}/result.md → Human Assessment section for any user feedback.
+5c. Read human_feedback from previous iterations in session_state.json.
+    Look for patterns: if 3+ iterations share the same human feedback tag
+    with no corresponding metric improvement, flag this in the diagnosis:
+    "Persistent issue: <tag> reported across runs N, M, P — suggest re-running Metric Design Agent."
 
 **Pattern Analysis:**
 6. Find working examples: look at successful runs (if any) or known-good configs in the codebase
@@ -384,6 +391,20 @@ Invoke `superpowers:systematic-debugging` skill. Follow its phases:
 
 10. Write diagnosis: `logs/sessions/<branch-sanitized>/run_{current_run}/analysis.md`
     Include: root cause hypothesis, evidence, what was tried before, proposed fix.
+
+### Step 1b: Request Human Feedback (non-blocking)
+
+In the same message as the diagnosis summary, include:
+"How did the gait look in the last run? If you have feedback, I'll incorporate it — otherwise I'm proceeding with the metrics-based diagnosis."
+
+This is a single message, not a blocking wait. The agent continues to IMPLEMENT in the same turn.
+
+If the user later provides qualitative feedback (in a follow-up message or during any subsequent interaction):
+- Parse feedback into structured tags from the vocabulary in tasks/<name>/monitor_config.md → Human Feedback Tags
+- Accept free-text notes that don't map to tags
+- Update the relevant run's result.md → Human Assessment section in-place
+- Update session_state.json → iterations[N].human_feedback with {tags: [...], notes: "..."}
+- This feedback is then available to future ITERATE phases
 
 ### Step 2: IMPLEMENT
 
