@@ -513,7 +513,7 @@ Shared scripts in `.claude/rl-training/scripts/`:
 | `init_session.sh "<goal>" "<branch>"` | Initialize session directory + state |
 | `get_latest_run.py <project> [--state S] [--wait N] [--branch B]` | Find active run |
 | `monitor.py <run_path> [--previous file] [--categories cats] [--raw-output path]` | Fetch metrics → markdown + raw JSON |
-| `evaluate_policy.py <run_path> --output-dir <dir> [--config path]` | Headless eval with video + metrics |
+| `tasks/<name>/evaluate_policy.py <run_path> --output-dir <dir> [--config path] [--dry-run]` | Task-specific behavioral eval with prints, metrics, and video |
 | `notify.sh "<message>" [--branch name] [--file path]` | Notification delivery |
 | `tasks/<name>/monitor_metrics.py <raw.json> [--previous prev.json] [--config cfg.md]` | Compute Tier 1 derived quality metrics |
 | `tasks/<name>/eval_metrics.py` (imported by evaluate_policy.py) | Compute Tier 2 detailed quality analysis |
