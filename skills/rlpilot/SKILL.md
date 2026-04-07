@@ -78,7 +78,7 @@ For each phase in order, check if it's already done. If not, dispatch a foregrou
 | Phase | Done signal |
 |-------|------------|
 | SETUP-DISCOVER | `config.md` has `## Robot` and `## Task` sections |
-| SETUP-MONITOR | At least one `.claude/rl-training/tasks/*/monitor_config.md` exists |
+| SETUP-MONITOR | At least one `.claude/rl-training/tasks/*/monitor_config.md` exists AND `.claude/rl-training/tasks/*/.eval_validated` exists |
 | SETUP-HOSTS | `config.md` has `## Hosts` section + matching `hosts/<name>/host.md` files exist |
 | SETUP-NOTIFY | `config.md` has `## Notifications` section |
 | SETUP-GENERATE | `.claude/rl-training/scripts/monitor.py` exists |
