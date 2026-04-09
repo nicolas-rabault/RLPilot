@@ -1,7 +1,7 @@
 {
   "name": "rlcopilot",
   "description": "Autonomous RL training management — launch, monitor, evaluate, and iterate on remote GPU servers with multi-agent architecture",
-  "version": "0.5.2",
+  "version": "0.5.3",
   "author": {
     "name": "Nicolas Rabault"
   },
